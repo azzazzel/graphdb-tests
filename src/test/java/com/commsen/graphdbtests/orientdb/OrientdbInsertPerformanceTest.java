@@ -1,123 +1,155 @@
 
 package com.commsen.graphdbtests.orientdb;
 
-import java.util.Collection;
-import java.util.LinkedList;
+import java.io.IOException;
 
+import org.junit.Before;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
 
+import com.commsen.graphdbtests.BaseGraphInsertPerformanceTest;
 import com.orientechnologies.orient.core.db.graph.OGraphDatabase;
 import com.orientechnologies.orient.core.id.ORID;
 import com.orientechnologies.orient.core.intent.OIntentMassiveInsert;
 import com.orientechnologies.orient.core.record.impl.ODocument;
 
-@RunWith(value = Parameterized.class)
-public class OrientdbInsertPerformanceTest extends OrientdbBasePerformanceTest {
+public class OrientdbInsertPerformanceTest extends BaseGraphInsertPerformanceTest {
 
-	enum ModelType {
-		VERTECES_ONLY, VERTECES_AND_EDGES, EDGES_ONLY
+	public OrientdbInsertPerformanceTest(long numberOfDocs, long numberOfProperties, ModelType modelType) {
+
+		super(numberOfDocs, numberOfProperties, modelType);
+		// TODO Auto-generated constructor stub
 	}
 
-	protected ModelType modelType;
 
-	protected long numberOfDocuments;
+	protected void createVertex(ODocument doc) {
 
-	protected static long skipEdgesTestAfter = 25000;
-
-	@Parameters
-	public static Collection<Object[]> getParameters() {
-
-		long[] verteces = new long[] {
-			// @formatter:off
-			1000, 10000, 25000, 50000, 100000, 500000, 1000000
-			// @formatter:on
-			};
-
-		Object[] types = new Object[] {
-			ModelType.VERTECES_ONLY, ModelType.VERTECES_AND_EDGES, ModelType.EDGES_ONLY
-		};
-
-		LinkedList<Object[]> params = new LinkedList<Object[]>();
-
-		for (Object modelTypes : types) {
-			for (long num : verteces) {
-				if (modelTypes != ModelType.VERTECES_ONLY && num > skipEdgesTestAfter) {
-					// do not run with EDGEs when more than 'skipEdgesTestAfter'
-					// are to be created as it will take forever!
-					continue;
-				}
-				params.add(new Object[] {
-					num, modelTypes
-				});
-			}
+		doc.reset();
+		doc.setClassName("OGraphVertex");
+		for (int i = 0; i < numberOfProperties; i++) {
+			doc.field("property" + i, "value" + i);
 		}
-
-		return params;
+		doc.save();
 	}
 
-	public OrientdbInsertPerformanceTest(long numberOfDocs, ModelType modelType) {
+	protected ODocument createEdge(ODocument doc1, ODocument doc2, final OGraphDatabase db) {
 
-		super(TestType.INSERT, "Test inserting " + modelType);
-
-		this.numberOfDocuments = numberOfDocs;
-		this.modelType = modelType;
-
+		ODocument doc = db.createEdge(doc1, doc2);
+		for (int i = 0; i < numberOfProperties; i++) {
+			doc.field("property" + i, "value" + i);
+		}
+		return doc;
 	}
 
-	@Test
-	public void addDocuments() {
+	protected ODocument createEdge(ORID id1, ORID id2, final OGraphDatabase db) {
 
+		ODocument doc = db.createEdge(id1, id2);
+		for (int i = 0; i < numberOfProperties; i++) {
+			doc.field("property" + i, "value" + i);
+		}
+		return doc;
+	}
+
+	@Before
+	public void clearData()
+		throws IOException {
+
+		OrientDbUtil.dropDB();
+		OrientDbUtil.createDB();
+	}
+
+
+	@Override
+	protected TestResult doAddDocuments() {
 		long v = 0, e = 0;
 
-		ORID d1 = null, d2 = null;
+		ODocument doc1 = null, doc2 = null;
+		ORID id1 = null, id2 = null;
 
-		OGraphDatabase db = OrientDbUtil.getDatabase();
-		db.declareIntent(new OIntentMassiveInsert());
+		final OGraphDatabase db = OrientDbUtil.getDatabase();
+		try {
+			db.declareIntent(new OIntentMassiveInsert());
 
-		switch (modelType) {
+			boolean referenceById = false;
+			if (modelType == ModelType.EDGES_ONLY_BY_ID || modelType == ModelType.VERTECES_AND_EDGES_BY_ID) {
+				referenceById = true;
+			}
 
-		case VERTECES_AND_EDGES:
-			v = numberOfDocuments / 2;
-			e = numberOfDocuments - v;
-			break;
+			switch (modelType) {
 
-		case VERTECES_ONLY:
-			v = numberOfDocuments;
-			break;
+			case VERTECES_AND_EDGES:
+			case VERTECES_AND_EDGES_BY_ID:
+				v = numberOfDocuments / 2;
+				e = numberOfDocuments - v;
+				break;
 
-		case EDGES_ONLY:
-			e = numberOfDocuments - 2;
-			d1 = db.createVertex().save().getIdentity();
-			d2 = db.createVertex().save().getIdentity();
+			case VERTECES_ONLY:
+				v = numberOfDocuments;
+				break;
+
+			case EDGES_ONLY:
+			case EDGES_ONLY_BY_ID:
+				e = numberOfDocuments - 2;
+				if (referenceById) {
+					id1 = db.createVertex().save().getIdentity();
+					id2 = db.createVertex().save().getIdentity();
+				}
+				else {
+					doc1 = db.createVertex().save();
+					doc2 = db.createVertex().save();
+				}
+			}
+
+
+			ODocument doc = db.createVertex();
+
+			for (int i = 0; i < v; i++) {
+
+				if (i % TIMEOUT_CHECK == 0 && System.currentTimeMillis() - startTime > TIMEOUT) {
+					return new TestResult(i, 0, true);
+				}
+
+				createVertex(doc);
+				if (i == 0) {
+					if (referenceById) {
+						id1 = doc.getIdentity().copy();
+					}
+					else {
+						doc1 = doc.copy();
+					}
+				}
+				if (i == 1) {
+					if (referenceById) {
+						id2 = doc.getIdentity().copy();
+					}
+					else {
+						doc2 = doc.copy();
+					}
+				}
+			}
+
+			for (int i = 0; i < e; i++) {
+
+				if (i % TIMEOUT_CHECK == 0 && System.currentTimeMillis() - startTime > TIMEOUT) {
+					return new TestResult(v, i, true);
+				}
+
+				if (referenceById) {
+					doc = createEdge(id1, id2, db);
+				}
+				else {
+					doc = createEdge(doc1, doc2, db);
+				}
+				doc.save();
+			}
+
+			db.declareIntent(null);
+
 		}
-
-		long t = System.currentTimeMillis();
-
-		ODocument doc = db.createVertex();
-
-		for (int i = 0; i < v; i++) {
-			doc.reset();
-			doc.setClassName("OGraphVertex");
-			doc.save();
-			if (i == 0)
-				d1 = doc.getIdentity().copy();
-			if (i == 1)
-				d2 = doc.getIdentity().copy();
+		finally {
+			db.close();
 		}
-
-		for (int i = 0; i < e; i++) {
-			doc = db.createEdge(d1, d2);
-			doc.save();
-		}
-
-		db.declareIntent(null);
-
-		printInsertTime((System.currentTimeMillis() - t), db.countVertexes(), db.countEdges());
-
-		db.close();
+		
+		return new TestResult(db.countVertexes(), db.countEdges(), false);
 	}
 
 }

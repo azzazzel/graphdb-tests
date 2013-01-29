@@ -1,88 +1,96 @@
 
 package com.commsen.graphdbtests.neo4j;
 
-import java.util.Collection;
-import java.util.LinkedList;
+import java.io.IOException;
 
+import org.junit.Before;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
 import org.neo4j.cypher.javacompat.ExecutionEngine;
 import org.neo4j.cypher.javacompat.ExecutionResult;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.Relationship;
 import org.neo4j.graphdb.RelationshipType;
 import org.neo4j.graphdb.Transaction;
 
-@RunWith(value = Parameterized.class)
-public class Neo4jInsertPerformanceTest extends Neo4jBasePerformanceTest {
+import com.commsen.graphdbtests.BaseGraphInsertPerformanceTest;
+import com.commsen.graphdbtests.BaseGraphInsertPerformanceTest.TestResult;
+
+public class Neo4jInsertPerformanceTest extends BaseGraphInsertPerformanceTest {
 
 	private static enum RelTypes
 		implements RelationshipType {
 		RELATES_TO
 	}
 
-	private static enum ModelType {
-		VERTECES_ONLY, VERTECES_AND_EDGES, EDGES_ONLY
+	public Neo4jInsertPerformanceTest(long numberOfDocs, long numberOfProperties, ModelType modelType) {
+
+		super(numberOfDocs, numberOfProperties, modelType);
+		// TODO Auto-generated constructor stub
 	}
 
-	protected ModelType modelType;
+	protected Relationship createRelationShip(Node node1, Node node2) {
 
-	protected long numberOfDocuments;
-
-	protected static long skipEdgesTestAfter = 25000;
-
-	@Parameters
-	public static Collection<Object[]> getParameters() {
-
-		long[] verteces = new long[] {
-			// @formatter:off
-			1000, 10000, 25000, 50000, 100000, 500000, 1000000
-			// @formatter:on
-			};
-
-		Object[] types = new Object[] {
-			ModelType.VERTECES_ONLY, ModelType.VERTECES_AND_EDGES, ModelType.EDGES_ONLY
-			};
-
-		LinkedList<Object[]> params = new LinkedList<Object[]>();
-
-		for (Object modelTypes : types) {
-			for (long num : verteces) {
-				params.add(new Object[] {
-					num, modelTypes
-				});
-			}
+		Relationship r = node1.createRelationshipTo(node2, RelTypes.RELATES_TO);
+		for (int i = 0; i < numberOfProperties; i++) {
+			r.setProperty("property" + i, "value" + i);
 		}
-
-		return params;
+		return r;
 	}
 
-	public Neo4jInsertPerformanceTest(long numberOfDocs, ModelType modelType) {
+	protected Node createNode(final GraphDatabaseService db) {
 
-		super(TestType.INSERT, "Test inserting " + modelType);
-
-		this.numberOfDocuments = numberOfDocs;
-		this.modelType = modelType;
-
+		Node n = db.createNode();
+		for (int i = 0; i < numberOfProperties; i++) {
+			n.setProperty("property" + i, "value" + i);
+		}
+		return n;
 	}
 
-	@Test
-	public void addDocuments() {
+	@Before
+	public void clearData()
+		throws IOException {
 
+		Neo4jUtil.dropDB();
+		Neo4jUtil.createDB();
+	}
+
+	private long getNodes() {
+
+		final ExecutionEngine engine = new ExecutionEngine(Neo4jUtil.getDatabase());
+		final ExecutionResult result = engine.execute("START n=node(*) RETURN count(n) AS c");
+		return (Long) result.columnAs("c").next();
+	}
+
+	private long getRelations() {
+
+		final ExecutionEngine engine = new ExecutionEngine(Neo4jUtil.getDatabase());
+		final ExecutionResult result = engine.execute("START r=relationship(*) RETURN count(r) AS c");
+		return (Long) result.columnAs("c").next();
+	}
+
+	@Override
+	protected TestResult doAddDocuments() {
 		long v = 0, e = 0;
 
 		Node node1 = null, node2 = null;
+		Long id1 = null, id2 = null;
 
-		long t = System.currentTimeMillis();
+		final long startTime = System.currentTimeMillis();
 
-		GraphDatabaseService db = Neo4jUtil.getDatabase();
-		Transaction tx = db.beginTx();
+		final GraphDatabaseService db = Neo4jUtil.getDatabase();
+		final Transaction tx = db.beginTx();
+
+		boolean referenceById = false;
+		if (modelType == ModelType.EDGES_ONLY_BY_ID || modelType == ModelType.VERTECES_AND_EDGES_BY_ID) {
+			referenceById = true;
+		}
+
 		try {
 			switch (modelType) {
 
 			case VERTECES_AND_EDGES:
+			case VERTECES_AND_EDGES_BY_ID:
 				v = numberOfDocuments / 2;
 				e = numberOfDocuments - v;
 				break;
@@ -92,41 +100,60 @@ public class Neo4jInsertPerformanceTest extends Neo4jBasePerformanceTest {
 				break;
 
 			case EDGES_ONLY:
+			case EDGES_ONLY_BY_ID:
 				e = numberOfDocuments - 2;
-				node1 = db.createNode();
-				node2 = db.createNode();
+				if (referenceById) {
+					id1 = createNode(db).getId();
+					id2 = createNode(db).getId();
+				}
+				else {
+					node1 = createNode(db);
+					node2 = createNode(db);
+				}
 			}
 
 			for (int i = 0; i < v; i++) {
-				Node node = db.createNode();
+
+				if (i % TIMEOUT_CHECK == 0 && System.currentTimeMillis() - startTime > TIMEOUT) {
+					return new TestResult(i, 0, true);
+				}
+
+				final Node node = createNode(db);
 				if (i == 0)
-					node1 = node;
+					if (referenceById) {
+						id1 = node.getId();
+					}
+					else {
+						node1 = node;
+					}
 				if (i == 1)
-					node2 = node;
+					if (referenceById) {
+						id2 = node.getId();
+					}
+					else {
+						node2 = node;
+					}
 			}
 
 			for (int i = 0; i < e; i++) {
-				node1.createRelationshipTo(node2, RelTypes.RELATES_TO);
+
+				if (i % TIMEOUT_CHECK == 0 && System.currentTimeMillis() - startTime > TIMEOUT) {
+					return new TestResult(v, i, true);
+				}
+
+				if (referenceById) {
+					node1 = db.getNodeById(id1);
+					node2 = db.getNodeById(id2);
+				}
+				createRelationShip(node1, node2);
 			}
 			tx.success();
 		}
 		finally {
 			tx.finish();
 		}
-
-		printInsertTime((System.currentTimeMillis() - t), getNodes(), getRelations());
-
-	}
-
-	private long getNodes() {
-		ExecutionEngine engine = new ExecutionEngine(Neo4jUtil.getDatabase());
-		ExecutionResult result = engine.execute("START n=node(*) RETURN count(n) AS c");
-		return (Long) result.columnAs("c").next();
-	}
-
-	private long getRelations() {
-		ExecutionEngine engine = new ExecutionEngine(Neo4jUtil.getDatabase());
-		ExecutionResult result = engine.execute("START r=relationship(*) RETURN count(r) AS c");
-		return (Long) result.columnAs("c").next();
+		
+		return new TestResult(getNodes(), getRelations(), true);
+		
 	}
 }
